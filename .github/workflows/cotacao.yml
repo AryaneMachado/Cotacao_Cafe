@@ -1,0 +1,41 @@
+name: Coletar cotação do café
+
+on:
+  schedule:
+    # 21:17 UTC = 18:17 em Brasília, de segunda a sexta (depois do fechamento do mercado)
+    - cron: "17 21 * * 1-5"
+  workflow_dispatch: # permite rodar manualmente pelo botão "Run workflow"
+
+permissions:
+  contents: write # necessário para o workflow salvar o CSV no repositório
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Coletar as cotações
+        run: python coletar_cotacao.py
+
+      - name: Salvar o CSV no repositório
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add precos_cafe.csv
+          if git diff --cached --quiet; then
+            echo "Sem alterações para salvar."
+          else
+            git commit -m "Cotação de $(TZ=America/Sao_Paulo date +%d/%m/%Y)"
+            git push
+          fi
