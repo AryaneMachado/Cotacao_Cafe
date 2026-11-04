@@ -194,10 +194,22 @@ def price_aiba(headers, url):
 
 
 def price_cccv(headers, url):
+    """Arábica, bebida "dura" (R$/saca) na página inicial do CCCV."""
     soup = BeautifulSoup(fetch(url, headers).content, "html.parser")
-    block = soup.find("div", class_="cotacao-conilon")
-    row = block.find("ul", class_="bottom-conilon")
-    return round(brl_to_float(row.find_all("li")[-1].text), DIGITS_FOR_FLOATS)
+    label = soup.find(string=re.compile(r'Bebida\s*["\u201c\u201d\']?\s*dura', re.I))
+    if label is None:
+        raise ValueError("linha 'Bebida dura' não encontrada")
+    # sobe até o menor bloco que contém o preço (R$) dessa linha
+    node = label.parent
+    while node is not None and "R$" not in node.get_text():
+        node = node.parent
+    if node is None:
+        raise ValueError("preço da bebida dura não encontrado")
+    text = node.get_text(" ", strip=True)
+    match = re.search(r'Bebida\s*["\u201c\u201d\']?\s*dura.*?R\$\s*([\d.]+,\d{2})', text, re.I | re.S)
+    if not match:
+        raise ValueError("não foi possível ler o preço da bebida dura")
+    return round(brl_to_float(match.group(1)), DIGITS_FOR_FLOATS)
 
 
 COLLECTORS = {
@@ -232,11 +244,20 @@ def collect_prices():
     return prices
 
 
+def migrate_cccv(df):
+    """Migração única: até 04/11/2026 a coluna 'cccv' guardava o CONILON.
+    Esses valores passam para 'cccv-conilon' e 'cccv' passa a ser arábica (bebida dura)."""
+    if "cccv" in df.columns and "cccv-conilon" not in df.columns:
+        df["cccv-conilon"] = df["cccv"]
+        df["cccv"] = None
+    return df
+
+
 def save_csv(prices, path=CSV_PATH):
     """Acrescenta a linha do dia. Se o dia já existir, substitui (sem duplicar)."""
     df_new = pd.DataFrame(prices)
     if os.path.exists(path):
-        df_existing = pd.read_csv(path)
+        df_existing = migrate_cccv(pd.read_csv(path))
         df_existing = df_existing[df_existing["data"] != prices["data"][0]]
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
