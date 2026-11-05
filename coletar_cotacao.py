@@ -19,6 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 
 CSV_PATH = os.environ.get("CSV_PATH", "precos_cafe.csv")
+GRAFICOS_DIR = os.environ.get("GRAFICOS_DIR", "graficos")
 TIMEOUT = 30  # segundos por requisição
 DIGITS_FOR_FLOATS = 2
 
@@ -245,11 +246,17 @@ def collect_prices():
 
 
 def migrate_cccv(df):
-    """Migração única: até 04/11/2026 a coluna 'cccv' guardava o CONILON.
-    Esses valores passam para 'cccv-conilon' e 'cccv' passa a ser arábica (bebida dura)."""
-    if "cccv" in df.columns and "cccv-conilon" not in df.columns:
-        df["cccv-conilon"] = df["cccv"]
-        df["cccv"] = None
+    """Migração: até 04/11/2026 a coluna 'cccv' guardava o CONILON (valores abaixo de R$ 1.200).
+    Esses valores passam para 'cccv-conilon' e 'cccv' fica só com o arábica (bebida dura).
+    Só mexe em valores de conilon, então é seguro rodar sempre."""
+    if "cccv" in df.columns:
+        valores = pd.to_numeric(df["cccv"], errors="coerce")
+        conilon = valores < 1200
+        if conilon.any():
+            if "cccv-conilon" not in df.columns:
+                df["cccv-conilon"] = None
+            df.loc[conilon, "cccv-conilon"] = valores[conilon]
+            df.loc[conilon, "cccv"] = None
     return df
 
 
@@ -266,6 +273,80 @@ def save_csv(prices, path=CSV_PATH):
     return df_final
 
 
+# ---------------------------------------------------------------- gráficos
+SOURCE_NAMES = {
+    "b3": "B3 (bolsa)",
+    "cepea": "CEPEA (SP)",
+    "coopama": "Coopama (Machado/MG)",
+    "coopercam": "Coopercam (Campos Gerais/MG)",
+    "ccmg": "CCCMG (Varginha/MG)",
+    "cooxupe": "Cooxupé - café fino (Guaxupé/MG)",
+    "cafe-pocos": "Café Poços (Poços de Caldas/MG)",
+    "cocapec": "Cocapec (Franca/SP)",
+    "aiba": "AIBA (Oeste/BA)",
+    "cccv": "CCCV - arábica dura (Vitória/ES)",
+}
+
+
+def gerar_graficos(df, pasta=GRAFICOS_DIR):
+    """Gera dois PNGs a partir do histórico: evolução dos preços e boxplot por fonte."""
+    import matplotlib
+
+    matplotlib.use("Agg")  # sem tela (roda no GitHub Actions)
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    df = df.drop(columns=["cccv-conilon"], errors="ignore")  # conilon fica fora dos gráficos
+    long = df.melt("data", var_name="fonte", value_name="preco")
+    long["preco"] = pd.to_numeric(long["preco"], errors="coerce")
+    long = long.dropna(subset=["preco"])
+    long = long[long["preco"] > 0]
+    if long.empty:
+        print("Sem dados para os gráficos.")
+        return
+    long["dia"] = pd.to_datetime(long["data"], format="%d/%m/%Y")
+    long["fonte"] = long["fonte"].map(SOURCE_NAMES).fillna(long["fonte"])
+    long = long.sort_values(["dia", "fonte"])
+
+    nomes = sorted(long["fonte"].unique())
+    paleta = sns.color_palette("tab10" if len(nomes) <= 10 else "tab20", len(nomes))
+    cores = dict(zip(nomes, paleta))
+    os.makedirs(pasta, exist_ok=True)
+    ultima = long["dia"].max().strftime("%d/%m/%Y")
+
+    # 1) Evolução dos preços
+    fig, ax = plt.subplots(figsize=(15, 7))
+    sns.lineplot(data=long, x="dia", y="preco", hue="fonte", marker="o", palette=cores, ax=ax)
+    ax.set_ylim(long["preco"].min() * 0.95, long["preco"].max() * 1.05)
+    ax.set_title(f"Preços do Café no Brasil (atualizado até {ultima})")
+    ax.set_xlabel("Dia")
+    ax.set_ylabel("Preço (R$/60 kg)")
+    ax.set_xticks(sorted(long["dia"].unique()))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend(title="Entidade", bbox_to_anchor=(1.01, 1), loc="upper left")
+    plt.setp(ax.get_xticklabels(), rotation=45)
+    fig.tight_layout()
+    fig.savefig(os.path.join(pasta, "evolucao_precos.png"), dpi=120)
+    plt.close(fig)
+
+    # 2) Distribuição por fonte (boxplot)
+    ordem = long.groupby("fonte")["preco"].median().sort_values(ascending=False).index
+    fig, ax = plt.subplots(figsize=(15, 7))
+    sns.boxplot(data=long, x="preco", y="fonte", order=ordem, hue="fonte", palette=cores,
+                legend=False, showfliers=False, ax=ax)
+    sns.stripplot(data=long, x="preco", y="fonte", order=ordem, color="black", size=4, alpha=0.6, ax=ax)
+    ax.set_title(f"Distribuição dos Preços do Café por Fonte (atualizado até {ultima})")
+    ax.set_xlabel("Preço (R$/60 kg)")
+    ax.set_ylabel("Entidade")
+    ax.grid(True, axis="x", linestyle="--", alpha=0.5)
+    fig.tight_layout()
+    fig.savefig(os.path.join(pasta, "distribuicao_precos.png"), dpi=120)
+    plt.close(fig)
+    print(f"Gráficos salvos em: {pasta}/")
+
+
 def main():
     prices = collect_prices()
     collected = [v[0] for k, v in prices.items() if k != "data" and v[0] is not None]
@@ -274,6 +355,10 @@ def main():
         sys.exit(1)
     df = save_csv(prices)
     print(f"CSV atualizado: {CSV_PATH} ({len(df)} linhas)")
+    try:
+        gerar_graficos(df)
+    except Exception as error:  # um problema no gráfico não pode impedir o salvamento do CSV
+        print(f"[ERRO] gráficos: {error!r}")
 
 
 if __name__ == "__main__":
