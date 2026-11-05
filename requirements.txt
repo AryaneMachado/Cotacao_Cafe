@@ -1,4 +1,6 @@
-requests
-beautifulsoup4
-pandas
-pytz
+   requests
+   beautifulsoup4
+   pandas
+   pytz
+   matplotlib
+   seaborn
