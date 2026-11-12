@@ -1,11 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Coleta diária de preços do café (saca de 60 kg) em várias fontes e
-acrescenta uma linha ao arquivo precos_cafe.csv.
-
-Versão em script do notebook "Coleta de Preços do Café" (Aryane Cassimiro Machado),
-adaptada para rodar sem o Google Colab (ex.: GitHub Actions).
-"""
 import os
 import random
 import re
